@@ -1,0 +1,17 @@
+{ pkgs ? import <nixpkgs> {} }:
+let
+  packageOverrides = pkgs.callPackage ./python-packages.nix {};
+  python = pkgs.python39.override {inherit packageOverrides; self = python;};
+  pythonWP = python.withPackages (p: with p; [
+    huggingface-hub
+    mistral-inference
+  ]);
+in
+pkgs.mkShell {
+  packages = with pkgs; [
+    linuxPackages.perf  # needs root
+    pythonWP
+    stress-ng
+    bandwidth
+  ];
+}

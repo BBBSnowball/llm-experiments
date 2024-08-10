@@ -1,0 +1,6 @@
+[submodule "llama.cpp"]
+	path = llama.cpp
+	url = https://github.com/ggerganov/llama.cpp
+[submodule "pip2nix"]
+	path = pip2nix
+	url = https://github.com/nix-community/pip2nix

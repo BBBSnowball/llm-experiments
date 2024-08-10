@@ -1,0 +1,5 @@
+*.bak
+.venv/
+/ollama/
+result
+*-result
