@@ -42,6 +42,16 @@ in pkgs.mkShell rec {
   postShellHook = ''
     # allow pip to install wheels
     unset SOURCE_DATE_EPOCH
+
+    # see https://github.com/abetlen/llama-cpp-python
+    export CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS -DGGML_F16C=ON -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_CCACHE=OFF"
+    #export CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=Intel10_64lp -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_NATIVE=ON"
+
+    # We have to replace `-march=native` by `-march=icelake-client` to avoid this error:
+    #   https://github.com/ggerganov/llama.cpp/issues/107
+    # -> or allow using the native CPU: https://discourse.nixos.org/t/gcc-march-native-work-incorrectly-in-devshell/33154/2
+    #export NIX_ENFORCE_NO_NATIVE=0
+    export NIX_CFLAGS_COMPILE="$NIX_CFLAGS_COMPILE -march=icelake-client"
   '';
 
   # Other packages that we want to use in our shell.
@@ -49,5 +59,16 @@ in pkgs.mkShell rec {
     linuxPackages.perf  # needs root
     stress-ng
     bandwidth
+    jq
+    #NOTE gguf-dump is available from gguf package in venv.
+    llama-cpp
+    cmake
+    gnumake
+    openblas
+    pkg-config
+    sycl-info
+    opensycl
+    #mkl
+    gdb
   ];
 }

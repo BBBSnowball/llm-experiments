@@ -1,0 +1,46 @@
+gk3v, J4125:
+    *-bank:3
+             description: DIMM LPDDR4 Synchronous 2133 MHz (0.5 ns)
+             product: 123456789012345678
+             vendor: ABCD
+             physical id: 3
+             serial: 1234
+             slot: A1_DIMM3
+             size: 2GiB
+             width: 16 bits
+             clock: 2133MHz (0.5ns)
+
+6 GB/s real
+2133/1000 * 4 banks * 16/8 = 17 GB/s...
+
+
+Framework 13, 11th gen, i7-1185G7:
+        *-bank:1
+             description: SODIMM DDR4 Synchronous 3200 MHz (0.3 ns)
+             product: 16ATF4G64HZ-3G2F1
+             vendor: Micron Technology
+             physical id: 1
+             serial: 31EE76FD
+             slot: Controller1-ChannelA-DIMM0
+             size: 32GiB
+             width: 64 bits
+             clock: 3200MHz (0.3ns)
+
+15 GB/s real
+3200/1000 * 2 * 64/8 = 51.2
+
+
+Wikipedia says my formula isn't wrong:
+https://en.wikipedia.org/wiki/DDR_SDRAM
+"With data being transferred 64 bits at a time, DDR SDRAM gives a transfer rate (in bytes/s) of (memory bus clock rate) × 2 (for dual rate) × 64 (number of bits transferred) / 8 (number of bits/byte). Thus, with a bus frequency of 100 MHz, DDR SDRAM gives a maximum transfer rate of 1600 MB/s."
+=> Factor for dual rate is already in the MHz (but I assumed that - vendors bend the truth where they can).
+
+DDR4-3200 is 25600 MB/s according to Wikipedia.
+
+=> //Ok, assuming that N100 also has DDR4-3200 (some pictures mention it), we may still get around one token per second with 69 GB of data. -> Nope.
+=> We are splitting by layer, so only one CPU will be working at a time and we will get the memory bandwidth of that single CPU.
+=> Thus, 3 sec per token, which is not so great.
+
+This one has 2 LAN ports and DDR5-4800:
+https://www.banggood.com/AOOSTAR-T8-Plus-Intel-Alder-Lake-N100-MAX-3_40-GHz-Mini-PC-16GB-RAM-1TB-SSD-Windows11-Triple-Display-Mini-Computer-Desktop-PC-p-1997788.html?cur_warehouse=CN&ID=6287845&rmmds=search
+

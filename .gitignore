@@ -3,3 +3,6 @@
 /ollama/
 result
 *-result
+graph*.dot
+/models/
+main.log
