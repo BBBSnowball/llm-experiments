@@ -1,4 +1,6 @@
 import re
+from functools import reduce
+import operator
 
 def match(r, line):
     global m
@@ -42,6 +44,7 @@ nodes_by_addr = {}
 nodes_by_op_index = []
 nodes_by_const_index = []
 for addr,label in nodes:
+    label = label.replace("\\>", ">")
     if match(r"^(\S+)((?: \(reshaped\)| \(transposed\)| \(copy of .*\))*) \((\S+)\)\|(\d+) (\[[0-9, ]+\]) \| (?:<x>)?(.*)$", label):
         node = Operation()
         node.name = m[1]
@@ -75,9 +78,8 @@ for a,b,label in edges:
 
 for node in nodes_by_addr.values():
     x = node.datatype.bitsize
-    for d in node.dimensions:
-        x *= d
-    node.bitsize = x
+    m = reduce(operator.mul, node.dimensions, 1)
+    node.bitsize = x*m
 
 traintrack_cols = []
 max_col = -1
@@ -124,6 +126,160 @@ else:
                 break
 
 prev_layer = -1
+for node in nodes_by_op_index:
+    if match(".*-(\d+)$", node.name):
+        layer = int(m[1])
+    else:
+        layer = -1
+    node.layer = layer
+    if layer >= 0 and prev_layer == layer-1:
+        node.is_new_layer = True
+    else:
+        node.is_new_layer = False
+    prev_layer = layer
+
+for node in nodes_by_const_index:
+    node.costs = {"read": node.bitsize/8}
+    node.read_cost = node
+    node.cost_is_paid = False
+    # If we encounter this, we will read it from memory, so don't assume
+    # that we will need some temporary storage for it like we will need
+    # for intermediate results. This is sort-of true but maybe not if the
+    # same input is used for more than one calculation.
+    node.in_temp_storage = False
+
+for node in nodes_by_op_index:
+    node.read_cost = None
+    node.in_temp_storage = True
+    if node.operation == "rms_norm(x)":
+        # norm is over first dimension
+        n = node.dimensions[0]
+        # It will be repeated if the other dimensions are >1.
+        m = reduce(operator.mul, node.dimensions[1:], 1)
+
+        # cost: sum over x*x, divide by n, sqrt, 1/x, scale all x by that
+        #NOTE Each fmul may include an add.
+        node.costs = { "fmul": n*2*m, "fdiv": m, "sqrt": m }
+    elif node.operation == "x*y":
+        # non-matrix mul
+        m = reduce(operator.mul, node.dimensions, 1)
+        node.costs = { "fmul": m }
+    elif node.operation == "X*Y":
+        if len(node.dimensions) == 2:
+            assert len(node.dimensions) == 2
+            assert len(node.inputs[0].dimensions) == 2
+            assert len(node.inputs[1].dimensions) == 2
+            assert node.inputs[0].dimensions[0] == node.inputs[1].dimensions[0]
+            assert node.inputs[0].dimensions[1] == node.dimensions[0]
+            assert node.inputs[1].dimensions[1] == node.dimensions[1]
+            #
+            #          BBBB
+            #  AAA  x  BBBB  =  CCCC  (with 3 mul+add for each C)
+            #  AAA     BBBB     CCCC
+            node.costs = { "fmul": node.dimensions[0] * node.dimensions[1] * node.inputs[0].dimensions[0] }
+        else:
+            # Oh, well... We even seem to have indices that appear only once and vanish in the output.
+            assert len(node.inputs[0].dimensions) == len(node.dimensions)
+            assert len(node.inputs[1].dimensions) == len(node.dimensions)
+            assert node.inputs[0].dimensions[0] == node.inputs[1].dimensions[0]
+            m = reduce(operator.mul, node.dimensions, 1)
+            node.costs = { "fmul": m * node.inputs[0].dimensions[0] }
+    elif node.operation == "reshape(x)" or node.operation == "transpose(x)" or node.operation == "permute(x)":
+        #TODO Does permute actually move data around?
+        node.costs = {}
+        node.read_cost = node.inputs[0]
+        node.in_temp_storage = node.inputs[0].in_temp_storage
+    elif node.operation == "view(x)":
+        node.costs = {}
+        # This is too pessimistic if the view is only reading part of it. We will fix this when we look at read_cost.
+        node.read_cost = node.inputs[0]
+        node.in_temp_storage = node.inputs[0].in_temp_storage
+    elif node.operation == "x->y":
+        node.costs = {"write": node.bitsize}
+    elif node.operation == "soft_max(x)":
+        ncols = node.inputs[0].dimensions[0]
+        nrows = reduce(operator.mul, node.dimensions[1:], 1)
+        # let's count compare as add
+        node.costs = { "fpow": nrows, "fmul": ncols*nrows*3, "fadd": ncols*nrows*3, "fexp": ncols*nrows }
+    elif node.operation == "cont(x)":
+        # This seems to forward to DUP, i.e. make a copy.
+        # -> Let's assume no cost, for now.
+        node.costs = {}
+    elif node.operation == "x+y":
+        m = reduce(operator.mul, node.dimensions, 1)
+        node.costs = { "fadd": m }
+    elif node.operation == "unary(x)" and "silu" in node.name:
+        # There are several unary functions but it's probably SILU based on the name:
+        # Sigmoid Linear Unit (SiLU) function
+        #   x/(1.0f + expf(-x))
+        m = reduce(operator.mul, node.dimensions, 1)
+        node.costs = { "fadd": 2*m, "fdiv": m, "fexp": m }
+    elif node.operation == "get_rows(x)":
+        node.costs = {"read": (node.bitsize + node.inputs[1].bitsize) / 8}
+    elif node.operation == "rope(x)":
+        # That one is complicated. Let's guess. Sorry.
+        assert node.dimensions == node.inputs[0].dimensions
+        assert node.inputs[1].dimensions == [1, 1]
+        m = reduce(operator.mul, node.dimensions, 1)
+        node.costs = { "fmul": m*3, "fsin": m }
+    else:
+        assert False, "TODO: handle operation: %r" % node.operation
+
+for node in nodes_by_op_index:
+    if "read" in node.costs:
+        continue
+    if node.read_cost is not None:
+        continue
+    if "read" in node.costs:
+        # We have assigned a better value in the previous loop. Let's keep that.
+        continue
+    read_cost = 0
+    for input in node.inputs:
+        if node.operation == "x->y" and input is node.inputs[1]:
+            continue
+        if input is not None and input.read_cost is not None:
+            rc = input.read_cost
+            while rc is not None and rc.read_cost is not rc:
+                rc = rc.read_cost
+            if rc is None or rc.cost_is_paid:
+                pass
+            elif rc.bitsize == input.bitsize:
+                read_cost += rc.bitsize / 8
+                rc.cost_is_paid = True
+            else:
+                # We are reading only part of the data, so don't mark it paid.
+                read_cost += input.bitsize / 8
+    if read_cost > 0:
+        node.costs["read"] = read_cost
+
+max_temp_size = 0
+total_costs = {}
+for node in nodes_by_op_index:
+    size = 0
+    for node2 in traintrack_cols[node.index].values():
+        if node2.in_temp_storage:
+            size += node2.bitsize
+    if size > 0:
+        node.costs["tempsize"] = size/8
+        max_temp_size = max(max_temp_size, size/8)
+
+    for k,v in node.costs.items():
+        if k == "tempsize":
+            continue
+        if k not in total_costs:
+            total_costs[k] = 0
+        total_costs[k] += v
+
+print("Size of temporary storage is up to %d bytes. This is without KV cache, which is usually much larger!" % max_temp_size)
+#print("Total cost: %r" % total_costs)
+print("Total cost:")
+for k,v in total_costs.items():
+    if k == "read" or k == "write":
+        v = "%.3f GiB" % (v/1024/1024/1024)
+    else:
+        v = "%g" % v
+    print("  %-5s %s" % (k+":", v))
+
 for node in nodes_by_op_index:
     # prefix1: outgoing arrow in first line
     prefix1 = ""
@@ -212,18 +368,30 @@ for node in nodes_by_op_index:
         else:
             prefix5 += "  "
 
-    if match(".*-(\d+)$", node.name):
-        layer = int(m[1])
-    else:
-        layer = -1
-    if layer >= 0 and prev_layer == layer-1:
+    if node.is_new_layer:
         print(prefix0 + "")
-        print(prefix0 + "== layer %d ==" % layer)
+        print(prefix0 + "== layer %d ==" % node.layer)
     print(prefix0 + "")
-    prev_layer = layer
 
-    print(prefix1 + "%s: %s" % (node.name, node.operation))
+    if node.operation == "x->y" and len(node.outputs_to) == 0:
+        x = " (STORE)"
+    elif node.operation == "x->y":
+        x = " (COPY)"
+    elif node.operation == "X*Y":
+        x = " (MAT_MUL)"
+    elif node.operation == "x*y":
+        x = " (MUL)"
+    elif node.operation == "unary(x)" and "silu" in node.name:
+        # There are several unary functions but it's probably SILU based on the name:
+        # Sigmoid Linear Unit (SiLU) function
+        #   x/(1.0f + expf(-x))
+        x = " (SILU?)"
+    else:
+        x = ""
+
+    print(prefix1 + "%s: %s%s" % (node.name, node.operation, x))
     print(prefix2 + "  %.1f, %r" % (node.bitsize/8, node.dimensions))
+    print(prefix2 + "  costs: %r" % (node.costs))
     if len(node.outputs_to) == 0:
         print(prefix2 + "  not used by other computations")
     if node.inputs[0]:
