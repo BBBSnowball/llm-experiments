@@ -1,15 +1,16 @@
 diff --git a/src/llama.cpp b/src/llama.cpp
-index e0fe8013..268246ac 100644
+index e0fe8013..773728bd 100644
 --- a/src/llama.cpp
 +++ b/src/llama.cpp
-@@ -14713,6 +14713,16 @@ static int llama_decode_internal(
+@@ -14713,6 +14713,17 @@ static int llama_decode_internal(
  
          ggml_cgraph * gf = llama_build_graph(lctx, u_batch, false);
  
 +        static int graphs_printed = 0;
 +
 +        if (graphs_printed < 10) {
-+            ggml_graph_print   (gf);
++            if (graphs_printed == 1)
++                ggml_graph_print(gf);
 +            char buf[] = "graph0.dot";
 +            buf[5] += graphs_printed;
 +            ggml_graph_dump_dot(gf, NULL, buf);
