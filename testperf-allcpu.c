@@ -82,47 +82,105 @@ static void pevnt_init() {
   }
 }
 
+static void prepare();
+static void work();
+static void cleanup();
+
+void print(const struct read_format* current, const struct read_format* prev) {
+  uint64_t flops = 0;
+  uint64_t flops2 = 0;
+  printf("counters:\n");
+  for (int i=0; i<NUM_EVENTS && i < current->nr; i++) {
+    printf("  %12lu, +%12lu, %s\n",
+        current->values[i].value, prev ? current->values[i].value-prev->values[i].value : 0, current->values[i].id == perf_ids.ids[i] ? event_ids[i].name : "");
+    if (event_ids[i].flops) {
+      if (prev)
+        flops += event_ids[i].flops * prev->values[i].value;
+      flops2 += event_ids[i].flops * current->values[i].value;
+    }
+  }
+  printf("  %12lu, +%12lu, flops\n",
+      flops2, prev ? flops2-flops : 0);
+}
+
 int main() {
   pevnt_init();
+
+  prepare();
+
   ioctl(perf_ids.pevfd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
 
+  work();
+  //ioctl(perf_ids.pevfd, PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP);
+
+  struct read_format rf, rf2;
+  int x = read(perf_ids.pevfd, &rf, sizeof(rf));
+  int x2 = read(perf_ids.pevfd, &rf2, sizeof(rf2));
+  if (x < 0 || x2 < 0)
+    perror("ERROR: read failed");
+
+  work();
+  struct read_format rf3;
+  int x3 = read(perf_ids.pevfd, &rf3, sizeof(rf3));
+
+  //printf("status=%d, nr=%ld\n", x, rf.nr);
+  print(&rf, 0);
+  print(&rf2, &rf);
+  print(&rf3, &rf2);
+
+  cleanup();
+
+  return 0;
+}
+
+#include "./llama.cpp/ggml/include/ggml.h"
+
+static struct ggml_context * ctx;
+struct ggml_tensor *x, *a, *b, *f;
+struct ggml_cgraph * gf;
+
+static void prepare() {
+  struct ggml_init_params params = {
+    .mem_size   = 16*1024*1024,
+    .mem_buffer = NULL,
+  };
+  ctx = ggml_init(params);
+
+  x = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
+
+  ggml_set_param(ctx, x); // x is an input variable
+
+  a  = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
+  b  = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
+  struct ggml_tensor * x2 = ggml_mul(ctx, x, x);
+  f  = ggml_add(ctx, ggml_mul(ctx, a, x2), b);
+
+  gf = ggml_new_graph(ctx);
+  ggml_build_forward_expand(gf, f);
+}
+
+static void cleanup() {
+}
+
+static void work() {
   static volatile char buf[100*1024*1024*2];
   memset((void*)buf, 42, sizeof(buf));
   char sum = 0;
   for (int i=0; i<sizeof(buf); i++)
     sum += buf[i];
   printf("sum: %d\r\n", sum);
-  volatile float a = 42.0;
-  volatile float b = 23.0;
-  volatile float c = a+b*b;
-
-  //ioctl(perf_ids.pevfd, PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP);
-  struct read_format rf, rf2;
-  int x = read(perf_ids.pevfd, &rf, sizeof(rf));
-  int x2 = read(perf_ids.pevfd, &rf2, sizeof(rf2));
-  if (x < 0)
-    perror("ERROR: read failed");
-  printf("status=%d, nr=%ld\n", x, rf.nr);
-  uint64_t flops = 0;
-  for (int i=0; i<NUM_EVENTS; i++) {
-    printf("  %10ld  %s\n",
-        rf.values[i].value, rf.values[i].id == perf_ids.ids[i] ? event_ids[i].name : "");
-    if (event_ids[i].flops)
-      flops += event_ids[i].flops * rf.values[i].value;
+  if (1) {
+    volatile float a = 42.0;
+    volatile float b = 23.0;
+    volatile float c = a+b*b;
   }
-  if (x2 < 0)
-    perror("ERROR: read failed");
-  printf("status=%d, nr=%ld\n", x2, rf2.nr);
-  uint64_t flops2 = 0;
-  for (int i=0; i<NUM_EVENTS; i++) {
-    printf("  %10lu, +%10lu, %s\n",
-        rf2.values[i].value, rf2.values[i].value-rf.values[i].value, rf2.values[i].id == perf_ids.ids[i] ? event_ids[i].name : "");
-    if (event_ids[i].flops)
-      flops2 += event_ids[i].flops * rf2.values[i].value;
-  }
-  printf("  %10lu, +%10lu, flops\n",
-      flops2, flops2-flops);
 
-  return 0;
+  // set the input variable and parameter values
+  ggml_set_f32(x, 2.0f);
+  ggml_set_f32(a, 3.0f);
+  ggml_set_f32(b, 4.0f);
+  
+  ggml_graph_compute_with_ctx(ctx, gf, 1);
+  
+  printf("f = %f\n", ggml_get_f32_1d(f, 0));
 }
-

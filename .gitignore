@@ -6,3 +6,4 @@ result
 graph*.dot
 /models/
 main.log
+/build/
