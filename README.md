@@ -11,14 +11,20 @@ for x in gemma2:2b-instruct-fp16 gemma2:2b-instruct-q4_0 mistral-large:latest ge
     ollama pull $x
 done
 
-gguf-dump models/mistral-nemo--latest.gguf
+sudo -i
+echo 1 > /sys/bus/event_source/devices/cpu/rdpmc
+echo 2 > /proc/sys/kernel/perf_event_paranoid
+exit
 sudo perf stat -a -e cycles,faults,node-loads,node-load-misses,offcore_requests.all_data_rd,fp_arith_inst_retired.scala
+
+gguf-dump models/mistral-nemo--latest.gguf
 llama.cpp/build/bin/llama-cli -m models/mistral-nemo--latest.gguf -c 4096
 # -> graph0.dot is different because that's for figuring out the size of some vectors. The others are the same.
 ```
 
 https://www.omrimallis.com/posts/understanding-how-llm-inference-works-with-llama-cpp/
 https://kipp.ly/transformer-param-count/
+https://www.theregister.com/2024/07/14/quantization_llm_feature/
 
 For mistral-nemo:
 ```
