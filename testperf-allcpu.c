@@ -139,21 +139,52 @@ static struct ggml_context * ctx;
 struct ggml_tensor *x, *a, *b, *f;
 struct ggml_cgraph * gf;
 
+static void fill_tensor(struct ggml_tensor *x) {
+  for (int i0=0; i0<x->ne[0]; i0++) {
+    for (int i1=0; i1<x->ne[1]; i1++) {
+      for (int i2=0; i2<x->ne[2]; i2++) {
+        for (int i3=0; i3<x->ne[3]; i3++) {
+          ggml_set_f32_nd(x, i0, i1, i2, i3,
+              //i0*-37+i1*23+i2*51-3*i3);
+              i0*3-i1*2-1);
+        }
+      }
+    }
+  }
+}
+
 static void prepare() {
   struct ggml_init_params params = {
-    .mem_size   = 16*1024*1024,
+    .mem_size   = 600*1024*1024,
     .mem_buffer = NULL,
   };
   ctx = ggml_init(params);
 
-  x = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
+  //const int type = GGML_TYPE_F32;
+  const int type = GGML_TYPE_F16;
+  //const int type = GGML_TYPE_I32;
+
+  //const int ne0 = 12288;
+  const int ne0 = 1000;
+
+  x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1024, 4);
 
   ggml_set_param(ctx, x); // x is an input variable
+  a  = ggml_new_tensor_2d(ctx, type, ne0, 1024);
+  b  = ggml_new_tensor_2d(ctx, type, ne0, 4);
+  ggml_set_param(ctx, a);
+  ggml_set_param(ctx, b);
+  struct ggml_tensor * x2 = ggml_mul_mat(ctx, a, b);
+  f  = ggml_add(ctx, ggml_mul(ctx, x, x2), x);
+  //f  = ggml_mul(ctx, x, x2);
+  //f = x2;
+  // How many FLOPS do we expect?
+  // 12288*1024*4 mul+add, 1024*4 mul, 1024*4 add -> 1e8
+  // Well, that's a lot more than the 78k that we actually get.
 
-  a  = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
-  b  = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
-  struct ggml_tensor * x2 = ggml_mul(ctx, x, x);
-  f  = ggml_add(ctx, ggml_mul(ctx, a, x2), b);
+  fill_tensor(a);
+  fill_tensor(b);
+  fill_tensor(x);
 
   gf = ggml_new_graph(ctx);
   ggml_build_forward_expand(gf, f);
@@ -176,10 +207,10 @@ static void work() {
   }
 
   // set the input variable and parameter values
-  ggml_set_f32(x, 2.0f);
-  ggml_set_f32(a, 3.0f);
-  ggml_set_f32(b, 4.0f);
-  
+  //ggml_set_f32(x, 2.0f);
+  //ggml_set_f32(a, 3.0f);
+  //ggml_set_f32(b, 4.0f);
+
   ggml_graph_compute_with_ctx(ctx, gf, 1);
   
   printf("f = %f\n", ggml_get_f32_1d(f, 0));
