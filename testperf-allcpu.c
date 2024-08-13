@@ -14,7 +14,7 @@
 //NOTE 10 hardware counters seems to be the most that we can use before they are all zero.
 const struct { int type; int config; const char* name; int flops; } event_ids[] = {
   // see https://man7.org/linux/man-pages/man2/perf_event_open.2.html
-  { PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES, "HW_CPU_CYCLES" },
+  //{ PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES, "HW_CPU_CYCLES" },
   { PERF_TYPE_HARDWARE, PERF_COUNT_HW_REF_CPU_CYCLES, "HW_REF_CPU_CYCLES" },
   { PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS, "HW_INSTRUCTIONS" },
   { PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_REFERENCES, "HW_CACHE_REFERENCES" },
@@ -34,7 +34,7 @@ const struct { int type; int config; const char* name; int flops; } event_ids[] 
   { PERF_TYPE_RAW, 0x04c7, "fp_arith_inst_retired.2_flops", 2 },
   { PERF_TYPE_RAW, 0x18c7, "fp_arith_inst_retired.4_flops", 4 },
   { PERF_TYPE_RAW, 0x60c7, "fp_arith_inst_retired.8_flops", 8 },
-  //{ PERF_TYPE_RAW, 0x80c7, "fp_arith_inst_retired.16_flops", 16 },
+  { PERF_TYPE_RAW, 0x80c7, "fp_arith_inst_retired.16_flops", 16 },
 };
 #define NUM_EVENTS (sizeof(event_ids)/sizeof(*event_ids))
 
@@ -164,8 +164,8 @@ static void prepare() {
   const int type = GGML_TYPE_F16;
   //const int type = GGML_TYPE_I32;
 
-  //const int ne0 = 12288;
-  const int ne0 = 1000;
+  const int ne0 = 12288;
+  //const int ne0 = 1000;
 
   x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1024, 4);
 
@@ -175,12 +175,12 @@ static void prepare() {
   ggml_set_param(ctx, a);
   ggml_set_param(ctx, b);
   struct ggml_tensor * x2 = ggml_mul_mat(ctx, a, b);
-  f  = ggml_add(ctx, ggml_mul(ctx, x, x2), x);
+  //f  = ggml_add(ctx, ggml_mul(ctx, x, x2), x);
   //f  = ggml_mul(ctx, x, x2);
-  //f = x2;
+  f = x2;
   // How many FLOPS do we expect?
-  // 12288*1024*4 mul+add, 1024*4 mul, 1024*4 add -> 1e8
-  // Well, that's a lot more than the 78k that we actually get.
+  // 12288*1024*4 mul+add, 1024*4 mul, 1024*4 add -> 1e8 = 100M
+  // -> We get 100.9M and we expect 100.7M, which is quite close.
 
   fill_tensor(a);
   fill_tensor(b);
@@ -194,13 +194,15 @@ static void cleanup() {
 }
 
 static void work() {
-  static volatile char buf[100*1024*1024*2];
-  memset((void*)buf, 42, sizeof(buf));
-  char sum = 0;
-  for (int i=0; i<sizeof(buf); i++)
-    sum += buf[i];
-  printf("sum: %d\r\n", sum);
-  if (1) {
+  if (0) {
+    static volatile char buf[100*1024*1024*2];
+    memset((void*)buf, 42, sizeof(buf));
+    char sum = 0;
+    for (int i=0; i<sizeof(buf); i++)
+      sum += buf[i];
+    printf("sum: %d\r\n", sum);
+  }
+  if (0) {
     volatile float a = 42.0;
     volatile float b = 23.0;
     volatile float c = a+b*b;

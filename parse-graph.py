@@ -176,7 +176,8 @@ for node in nodes_by_op_index:
             #          BBBB
             #  AAA  x  BBBB  =  CCCC  (with 3 mul+add for each C)
             #  AAA     BBBB     CCCC
-            node.costs = { "fmul": node.dimensions[0] * node.dimensions[1] * node.inputs[0].dimensions[0] }
+            c = node.dimensions[0] * node.dimensions[1] * node.inputs[0].dimensions[0]
+            node.costs = { "fmul": c, "fadd": c }
         else:
             # Oh, well... We even seem to have indices that appear only once and vanish in the output.
             assert len(node.inputs[0].dimensions) == len(node.dimensions)
