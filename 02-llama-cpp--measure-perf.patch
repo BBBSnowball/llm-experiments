@@ -1,0 +1,107 @@
+diff --git a/examples/main/main.cpp b/examples/main/main.cpp
+index 6e0635a6..2ceedc3f 100644
+--- a/examples/main/main.cpp
++++ b/examples/main/main.cpp
+@@ -15,6 +15,8 @@
+ #include <string>
+ #include <vector>
+ 
++#include "../../ggml/src/measure_perf.h"
++
+ #if defined (__unix__) || (defined (__APPLE__) && defined (__MACH__))
+ #include <signal.h>
+ #include <unistd.h>
+@@ -982,6 +984,8 @@ int main(int argc, char ** argv) {
+     llama_print_timings(ctx);
+     write_logfile(ctx, params, model, input_tokens, output_ss.str(), output_tokens);
+ 
++    measure_perf_write();
++
+     if (ctx_guidance) { llama_free(ctx_guidance); }
+     llama_free(ctx);
+     llama_free_model(model);
+diff --git a/ggml/src/CMakeLists.txt b/ggml/src/CMakeLists.txt
+index 425a2589..09599b25 100644
+--- a/ggml/src/CMakeLists.txt
++++ b/ggml/src/CMakeLists.txt
+@@ -1298,6 +1298,7 @@ add_library(ggml
+             ${GGML_SOURCES_LLAMAFILE} ${GGML_HEADERS_LLAMAFILE}
+             ${GGML_SOURCES_CANN}      ${GGML_HEADERS_CANN}
+             ggml-aarch64.c            ggml-aarch64.h
++            measure_perf.c
+             )
+ 
+ if (EMSCRIPTEN)
+diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
+index f926cc03..a9837bef 100644
+--- a/ggml/src/ggml.c
++++ b/ggml/src/ggml.c
+@@ -3466,6 +3466,8 @@ static inline int ggml_up(int n, int m) {
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+ 
++#include "measure_perf.h"
++
+ struct ggml_context * ggml_init(struct ggml_init_params params) {
+     // make this function thread safe
+     ggml_critical_section_start();
+@@ -3574,6 +3576,8 @@ struct ggml_context * ggml_init(struct ggml_init_params params) {
+ 
+     ggml_critical_section_end();
+ 
++    measure_perf_init("ggml_cgraph_perf.txt", false);
++
+     return ctx;
+ }
+ 
+@@ -18880,6 +18884,10 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+ 
+         ggml_barrier(state->shared);
+ 
++        if (state->ith == 0) {  // only measure in one thread
++            measure_perf_step(node_n);
++        }
++
+         if (state->shared->ec != GGML_STATUS_SUCCESS) {
+             break;
+         }
+@@ -18907,6 +18915,8 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+         /*.ec                      =*/ GGML_STATUS_SUCCESS,
+     };
+ 
++    measure_perf_start();
++
+ #ifdef GGML_USE_OPENMP
+     if (n_threads > 1) {
+         #pragma omp parallel num_threads(n_threads)
+@@ -18964,6 +18974,14 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
+     }
+ #endif
+ 
++    measure_perf_end();
++
++    static int perfs_written = 0;
++    perfs_written++;
++    if (perfs_written <= 10 || (perfs_written % 32) == 0) {
++        measure_perf_write();
++    }
++
+     // don't leave affinity set on the main thread
+     clear_numa_thread_affinity();
+ 
+diff --git a/ggml/src/measure_perf.c b/ggml/src/measure_perf.c
+new file mode 120000
+index 00000000..9564dbfd
+--- /dev/null
++++ b/ggml/src/measure_perf.c
+@@ -0,0 +1 @@
++../../../measure_perf.c
+\ No newline at end of file
+diff --git a/ggml/src/measure_perf.h b/ggml/src/measure_perf.h
+new file mode 120000
+index 00000000..d27a2573
+--- /dev/null
++++ b/ggml/src/measure_perf.h
+@@ -0,0 +1 @@
++../../../measure_perf.h
+\ No newline at end of file

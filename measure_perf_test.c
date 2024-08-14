@@ -2,7 +2,7 @@
 #include <time.h>
 
 int main() {
-  measure_perf_init("measure_perf_test.txt");
+  measure_perf_init("measure_perf_test.txt", true);
 
   for (int i=0; i<20; i++) {
     measure_perf_start();

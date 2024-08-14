@@ -11,25 +11,28 @@
 #include <sys/sysinfo.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 
 #include "measure_perf.h"
 
 //NOTE 10 hardware counters seems to be the most that we can use before they are all zero.
 const struct {
-  int type; int config; const char* name; int flops; bool synthetic;
+  int type; int config; const char* name; int flops;
 } event_ids[] = {
   // see https://man7.org/linux/man-pages/man2/perf_event_open.2.html
   //{ PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES, "HW_CPU_CYCLES" },
-  { PERF_TYPE_HARDWARE, PERF_COUNT_HW_REF_CPU_CYCLES, "HW_REF_CPU_CYCLES" },
-  { PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS, "HW_INSTRUCTIONS" },
-  { PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_REFERENCES, "HW_CACHE_REFERENCES" },
-  { PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES, "HW_CACHE_MISSES" },
-  { PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_INSTRUCTIONS, "HW_BRANCH_INSTRUCTIONS" },
+  { PERF_TYPE_HARDWARE, PERF_COUNT_HW_REF_CPU_CYCLES, "HW_REF_CPU_CYCLES", 0 },
+  { PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS, "HW_INSTRUCTIONS", 0 },
+  { PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_REFERENCES, "HW_CACHE_REFERENCES", 0 },
+  { PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES, "HW_CACHE_MISSES", 0 },
+  { PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_INSTRUCTIONS, "HW_BRANCH_INSTRUCTIONS", 0 },
   //{ PERF_TYPE_HARDWARE, PERF_COUNT_HW_STALLED_CYCLES_FRONTEND },
   //{ PERF_TYPE_HARDWARE, PERF_COUNT_HW_STALLED_CYCLES_BACKEND },
-  { PERF_TYPE_SOFTWARE, PERF_COUNT_SW_CPU_MIGRATIONS, "SW_CPU_MIGRATIONS" },
-  { PERF_TYPE_SOFTWARE, PERF_COUNT_SW_PAGE_FAULTS_MIN, "SW_PAGE_FAULTS_MIN" },
-  { PERF_TYPE_SOFTWARE, PERF_COUNT_SW_PAGE_FAULTS_MAJ, "SW_PAGE_FAULTS_MAJ" },
+  //{ PERF_TYPE_SOFTWARE, PERF_COUNT_SW_CPU_CLOCK, "cpu-clock", 0 },
+  { PERF_TYPE_SOFTWARE, PERF_COUNT_SW_TASK_CLOCK, "task-clock", 0 },
+  { PERF_TYPE_SOFTWARE, PERF_COUNT_SW_CPU_MIGRATIONS, "SW_CPU_MIGRATIONS", 0 },
+  { PERF_TYPE_SOFTWARE, PERF_COUNT_SW_PAGE_FAULTS_MIN, "SW_PAGE_FAULTS_MIN", 0 },
+  { PERF_TYPE_SOFTWARE, PERF_COUNT_SW_PAGE_FAULTS_MAJ, "SW_PAGE_FAULTS_MAJ", 0 },
   //{ PERF_TYPE_HW_CACHE, PERF_COUNT_HW_CACHE_LL | (PERF_COUNT_HW_CACHE_OP_READ<<8) | (PERF_COUNT_HW_CACHE_RESULT_MISS<<16), "HW_CACHE_MISS_READ" },
   //{ PERF_TYPE_HW_CACHE, PERF_COUNT_HW_CACHE_LL | (PERF_COUNT_HW_CACHE_OP_PREFETCH<<8) | (PERF_COUNT_HW_CACHE_RESULT_MISS<<16) },
   // see `perf list --details -v`, use `event | (umask<<8)`
@@ -44,6 +47,7 @@ const struct {
 };
 const char* event_synthetic_names[] = {
   "flops",
+  "wall-time",
 };
 #define NUM_EVENTS (sizeof(event_ids)/sizeof(*event_ids))
 #define NUM_SYNTHETIC_EVENTS (sizeof(event_synthetic_names)/sizeof(*event_synthetic_names))
@@ -63,22 +67,27 @@ typedef struct {
 typedef struct {
   int pevfd;
   FILE* output_file;
+  bool dirty;
   int prev_step;
-  uint64_t start[NUM_EVENTS];
-  uint64_t prev[NUM_EVENTS];
+  uint64_t start[NUM_ALL_EVENTS];
+  uint64_t prev[NUM_ALL_EVENTS];
   uint64_t cnt[MAX_STEPS+2];
   event_info_t info[MAX_STEPS+2][NUM_ALL_EVENTS];
 } state_t;
 static state_t state;
+static bool initialized = false;
 
-void measure_perf_init(const char* output_file) {
+void measure_perf_init(const char* output_file, bool force) {
+  if (initialized && !force)
+    return;
+
   memset(&state, 0, sizeof(state));
   // This tells us that the state is invalid and it tells perf_event_open to open a new group.
   state.pevfd = -1;
 
   state.prev_step = -2;
-  for (int i=0; i<MAX_STEPS+2; i++)
-    for (int j=0; j<NUM_ALL_EVENTS; j++)
+  for (unsigned int i=0; i<MAX_STEPS+2; i++)
+    for (unsigned int j=0; j<NUM_ALL_EVENTS; j++)
       state.info[i][j].min = UINT64_MAX;
 
   // based on https://stackoverflow.com/questions/65285636/libperf-perf-count-hw-cache-references
@@ -97,7 +106,7 @@ void measure_perf_init(const char* output_file) {
   pea.exclude_hv     = 1;
   pea.exclude_idle   = 1;
 
-  for (int i=0; i<NUM_EVENTS; i++) {
+  for (unsigned int i=0; i<NUM_EVENTS; i++) {
     pea.type           = event_ids[i].type;
     pea.config         = event_ids[i].config;
 
@@ -121,6 +130,8 @@ void measure_perf_init(const char* output_file) {
     state.pevfd = -1;
     return;
   }
+
+  initialized = true;
 }
 
 static void update_info(int step, int event, uint64_t diff) {
@@ -131,11 +142,12 @@ static void update_info(int step, int event, uint64_t diff) {
     state.info[step][event].max = diff;
 }
 
-static void update_infos(int step, const uint64_t prev[NUM_EVENTS], const read_format_t* current) {
-  state.cnt[step] += 1;
+static void update_infos(int step, const uint64_t prev[NUM_ALL_EVENTS], const read_format_t* current, const struct timespec* time) {
+  if (step >= 0)
+    state.cnt[step] += 1;
 
   uint64_t flops = 0;
-  for (int i=0; i<NUM_EVENTS && i < current->nr; i++) {
+  for (unsigned int i=0; i<NUM_EVENTS && i < current->nr; i++) {
     uint64_t value = current->values[i];
     uint64_t diff = value - prev[i];
     state.prev[i] = value;
@@ -149,6 +161,18 @@ static void update_infos(int step, const uint64_t prev[NUM_EVENTS], const read_f
 
   if (step >= 0) {
     update_info(step, NUM_EVENTS+0, flops);
+  }
+
+  if (1) {
+    int i = NUM_EVENTS+1;
+    uint64_t value = (uint64_t)time->tv_nsec + time->tv_sec*(uint64_t)1000*1000*1000;
+    uint64_t diff = value - prev[i];
+    state.prev[i] = value;
+    if (step == -1) {
+      state.start[i] = value;
+    } else {
+      update_info(step, i, diff);
+    }
   }
 }
 
@@ -166,15 +190,20 @@ static void update_for_step(int step) {
     state.pevfd = -1;
   }
 
-  update_infos(step, state.prev, &rf);
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+
+  update_infos(step, state.prev, &rf, &t);
 
   if (step == MAX_STEPS) {
-    update_infos(step+1, state.start, &rf);
+    update_infos(step+1, state.start, &rf, &t);
   }
 }
 
 void measure_perf_start() {
-  if (state.pevfd < 0)
+  // We compare with "<=" because zero is probably what we will get when init hasn't been called
+  // and this cannot be a real fd for us because it is used by stdin.
+  if (state.pevfd <= 0)
     return;
   if (state.prev_step != -2)
     printf("WARN: measure_perf_start: restart without calling measure_perf_end: previous step was %d\n", state.prev_step);
@@ -185,7 +214,7 @@ void measure_perf_start() {
 }
 
 void measure_perf_step(int step) {
-  if (state.pevfd < 0)
+  if (state.pevfd <= 0)
     return;
   if (state.prev_step == -2)
     return;
@@ -201,7 +230,7 @@ void measure_perf_step(int step) {
 }
 
 void measure_perf_end() {
-  if (state.pevfd < 0)
+  if (state.pevfd <= 0)
     return;
   if (state.prev_step < 0)
     return;
@@ -209,10 +238,14 @@ void measure_perf_end() {
   ioctl(state.pevfd, PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP);
   update_for_step(MAX_STEPS);
   state.prev_step = -2;
+  state.dirty = true;
 }
 
 void measure_perf_write() {
   FILE* f = state.output_file;
+  if (!f || !state.dirty)
+    return;
+  state.dirty = false;
   fprintf(f, "{");
   bool first = true;
   for (int step=0; step<MAX_STEPS+2; step++) {
@@ -232,7 +265,7 @@ void measure_perf_write() {
     else
       fprintf(f, "  \"%d\": {\n", step);
 
-    for (int i=0; i<NUM_ALL_EVENTS; i++) {
+    for (unsigned int i=0; i<NUM_ALL_EVENTS; i++) {
       const char* name = i < NUM_EVENTS ? event_ids[i].name : event_synthetic_names[i-NUM_EVENTS];
       fprintf(f, "    \"%s\":%-*s {", name, 22-(int)strlen(name), "");
       fprintf(f, " \"min\": %14lu, ", state.info[step][i].min);

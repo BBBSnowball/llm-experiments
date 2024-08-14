@@ -8,3 +8,4 @@ graph*.dot
 main.log
 /build/
 /measure_perf_test.txt
+/ggml_cgraph_perf.txt

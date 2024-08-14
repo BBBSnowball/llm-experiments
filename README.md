@@ -11,6 +11,8 @@ for x in gemma2:2b-instruct-fp16 gemma2:2b-instruct-q4_0 mistral-large:latest ge
     ollama pull $x
 done
 
+sudo mount --bind /var/lib/ollama /home/user2/mistral/ollama
+
 sudo -i
 echo 1 > /sys/bus/event_source/devices/cpu/rdpmc
 echo 2 > /proc/sys/kernel/perf_event_paranoid
