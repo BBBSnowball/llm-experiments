@@ -7,3 +7,4 @@ graph*.dot
 /models/
 main.log
 /build/
+/measure_perf_test.txt
