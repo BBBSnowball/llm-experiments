@@ -1,15 +1,16 @@
-// based on https://stackoverflow.com/questions/65285636/libperf-perf-count-hw-cache-references
-
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <linux/perf_event.h>
 #include <linux/hw_breakpoint.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/sysinfo.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 //NOTE 10 hardware counters seems to be the most that we can use before they are all zero.
 const struct { int type; int config; const char* name; int flops; } event_ids[] = {
@@ -40,45 +41,44 @@ const struct { int type; int config; const char* name; int flops; } event_ids[] 
 
 struct read_format {
   uint64_t nr;
-  struct {
-    uint64_t value;
-    uint64_t id;
-  } values[NUM_EVENTS];
+  uint64_t values[NUM_EVENTS];
 };
 
-struct {
-  int pevfd;
-  int ids[NUM_EVENTS];
-} perf_ids;
+int pevfd;
 
+// based on https://stackoverflow.com/questions/65285636/libperf-perf-count-hw-cache-references
+// (but modified a lot...)
 static void pevnt_init() {
   struct perf_event_attr pea;
-  int                    fd1 = -1;
-  int                    fd2 = -1;
-  int                    tid = syscall(__NR_gettid);
-  int cpu_id = -1;
+  int fd_group = -1;
 
   for (int i=0; i<NUM_EVENTS; i++) {
     memset(&pea, 0, sizeof(struct perf_event_attr));
-    pea.type           = event_ids[i].type;
     pea.size           = sizeof(struct perf_event_attr);
+    pea.type           = event_ids[i].type;
     pea.config         = event_ids[i].config;
+    pea.read_format    = PERF_FORMAT_GROUP;
+    pea.inherit        = 1;  // would be useful but not compatible with PERF_FORMAT_GROUP -> says the man page but it does work
+    //pea.pinned         = 1;  // error (EOF on read) if hardware counters aren't possible -> doesn't work
+    // We will enable it before doing the work, so start disabled.
     pea.disabled       = 1;
-    //pea.pinned         = 1;
-    pea.exclude_kernel = 1;
-    pea.exclude_hv     = 1;
+    // Only count userspace, not kernel or hypervisor.
+    // (We might like to include the kernel just in case it matters but we are not allowed to do that as a normal user.)
+    const bool withKernel = false;
+    pea.exclude_kernel = withKernel ? 0 : 1;
+    pea.exclude_hv     = withKernel ? 0 : 1;
     pea.exclude_idle   = 1;
-    pea.read_format    = PERF_FORMAT_GROUP | PERF_FORMAT_ID;
 
-    int fd = syscall(__NR_perf_event_open, &pea, tid, cpu_id, fd1, 0);
+    const int pid = 0;   // current process/thread
+    const int cpu = -1;  // any CPU
+    int fd = syscall(__NR_perf_event_open, &pea, pid, cpu, fd_group, 0);
     if (fd < 0) {
       printf("perf_event_open, i=%d -> %d\n", i, fd);
       perror("perf_event_open");
       exit(1);
     }
     if (i == 0)
-      perf_ids.pevfd = fd1 = fd;
-    ioctl(fd, PERF_EVENT_IOC_ID, &perf_ids.ids[i]);
+      pevfd = fd_group = fd;
   }
 }
 
@@ -92,11 +92,11 @@ void print(const struct read_format* current, const struct read_format* prev) {
   printf("counters:\n");
   for (int i=0; i<NUM_EVENTS && i < current->nr; i++) {
     printf("  %12lu, +%12lu, %s\n",
-        current->values[i].value, prev ? current->values[i].value-prev->values[i].value : 0, current->values[i].id == perf_ids.ids[i] ? event_ids[i].name : "");
+        current->values[i], prev ? current->values[i] - prev->values[i] : 0, event_ids[i].name);
     if (event_ids[i].flops) {
       if (prev)
-        flops += event_ids[i].flops * prev->values[i].value;
-      flops2 += event_ids[i].flops * current->values[i].value;
+        flops += event_ids[i].flops * prev->values[i];
+      flops2 += event_ids[i].flops * current->values[i];
     }
   }
   printf("  %12lu, +%12lu, flops\n",
@@ -108,25 +108,54 @@ int main() {
 
   prepare();
 
-  ioctl(perf_ids.pevfd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+  ioctl(pevfd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
 
   work();
-  //ioctl(perf_ids.pevfd, PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP);
 
   struct read_format rf, rf2;
-  int x = read(perf_ids.pevfd, &rf, sizeof(rf));
-  int x2 = read(perf_ids.pevfd, &rf2, sizeof(rf2));
+  int x = read(pevfd, &rf, sizeof(rf));
+  int x2 = read(pevfd, &rf2, sizeof(rf2));
   if (x < 0 || x2 < 0)
     perror("ERROR: read failed");
+  else if (x == 0 || x2 == 0) {
+    printf("ERROR: read() has returned EOF. We have probably asked for too many hardware counters.\n");
+    return 1;
+  }
 
   work();
   struct read_format rf3;
-  int x3 = read(perf_ids.pevfd, &rf3, sizeof(rf3));
+  int x3 = read(pevfd, &rf3, sizeof(rf3));
+
+  ioctl(pevfd, PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP);
 
   //printf("status=%d, nr=%ld\n", x, rf.nr);
   print(&rf, 0);
   print(&rf2, &rf);
   print(&rf3, &rf2);
+
+  ioctl(pevfd, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP);
+  int child = fork();
+  int child2;
+  if (child > 0)
+    child2 = fork();
+  if (child == 0 || child2 == 0) {
+    work();
+
+    printf("in child:\n");
+    struct read_format rf5;
+    int x5 = read(pevfd, &rf5, sizeof(rf5));
+    print(&rf5, &rf3);
+    return 0;
+  } else {
+    waitpid(child, NULL, 0);
+    waitpid(child2, NULL, 0);
+  }
+  ioctl(pevfd, PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP);
+
+  printf("in parent:\n");
+  struct read_format rf4;
+  int x4 = read(pevfd, &rf4, sizeof(rf4));
+  print(&rf4, &rf3);
 
   cleanup();
 
@@ -166,6 +195,7 @@ static void prepare() {
 
   const int ne0 = 12288;
   //const int ne0 = 1000;
+  //const int ne0 = 10;
 
   x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1024, 4);
 
